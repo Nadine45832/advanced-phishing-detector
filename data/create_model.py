@@ -1,23 +1,60 @@
 import pandas as pd
+import numpy as np
 import matplotlib.pyplot as plt
 import re
 from collections import Counter
 import nltk
 from nltk.corpus import stopwords
+from nltk.stem import WordNetLemmatizer
 import string
+from sklearn.feature_extraction.text import TfidfVectorizer
 
 
 CSV_PATH = "emails.csv"
 TEXT_COLUMN = "email_text"
+CLEAN_TEXT_COLUMN = "clean_email_text"
 LABEL_COLUMN = "email_type"
 
-nltk.download("stopwords")
+nltk.download('stopwords')
+nltk.download('wordnet')
+nltk.download('omw-1.4')
 STOPWORDS = set(stopwords.words("english"))
+lemmatizer = WordNetLemmatizer()
 
 URL_REGEX = re.compile(
     r"(?:(?:https?://|www\.)\S+|\b[a-zA-Z0-9-]+\.(?:com|net|org|edu|gov|co|io|ru|tk|info|biz)(?:/\S*)?)",
     flags=re.IGNORECASE
 )
+
+
+def clean_text(text):
+    if pd.isnull(text):
+        return ""
+
+    text = text.lower()
+    text = re.sub(r'https?://\S+|www\.\S+', '', text)
+    text = re.sub(r'[^a-z0-9\s]', '', text)
+    words = [word for word in text.split() if word not in STOPWORDS]
+    words = [w for w in words if w.isalpha()]
+    words = [lemmatizer.lemmatize(word) for word in words]
+
+    return ' '.join(words)
+
+
+def tfidf_analyz(df, text_column):
+    tfidf = TfidfVectorizer(max_features=5000, stop_words='english')
+    tfidf_vectors = tfidf.fit_transform(df[text_column])
+
+    tfidf_df = pd.DataFrame(tfidf_vectors.toarray(), columns=tfidf.get_feature_names_out())
+    tfidf_df[LABEL_COLUMN] = df[LABEL_COLUMN].values
+
+    mean_tfidf_by_class = tfidf_df.groupby(LABEL_COLUMN).mean()
+
+    top_n = 10
+    for label in mean_tfidf_by_class.index:
+        print(f"\nTop {top_n} words for class '{label}':")
+        top_words = mean_tfidf_by_class.loc[label].sort_values(ascending=False).head(top_n)
+        print(top_words)
 
 
 def get_urls(text):
@@ -113,9 +150,6 @@ def transform_data(df):
 
 
 def analyze(df):
-    print("\nDataset loaded successfully")
-    print("-" * 40)
-
     print("\nDataset info:")
     print(df.info())
 
@@ -134,6 +168,7 @@ def analyze(df):
     plt.title("Class Distribution")
     plt.xlabel("Class")
     plt.ylabel("Number of Emails")
+    plt.xticks(rotation=0)
     plt.show()
 
     df["text_length"] = df[TEXT_COLUMN].apply(
@@ -143,22 +178,61 @@ def analyze(df):
     print("\nText length statistics:")
     print(df["text_length"].describe())
 
-    # Plot text length distribution
-    plt.hist(df["text_length"], bins=50)
-    plt.title("Email Text Length Distribution")
-    plt.xlabel("Number of Characters")
+    df["log_text_length"] = np.log(df["text_length"] + 1)
+
+    for label in df[LABEL_COLUMN].unique():
+        plt.hist(
+            df[df[LABEL_COLUMN] == label]["log_text_length"],
+            bins=50,
+            alpha=0.6,
+            label=str(label)
+        )
+    plt.title("Log-Scaled Email Length Distribution")
+    plt.xlabel("Log Number of Characters")
     plt.ylabel("Frequency")
+    plt.legend()
     plt.show()
 
     print("\nAverage text length per class:")
-    print(df.groupby(LABEL_COLUMN)["text_length"].mean())
+    avg_length = df.groupby(LABEL_COLUMN)["text_length"].mean()
 
-    # Boxplot
-    df.boxplot(column="text_length", by=LABEL_COLUMN)
-    plt.title("Text Length by Class")
+    # barchart
+    avg_length.plot(kind="bar")
+    plt.title("Average Text Length by Class")
     plt.suptitle("")
     plt.xlabel("Class")
     plt.ylabel("Text Length")
+    plt.xticks(rotation=0)
+    plt.show()
+
+    # words count
+    df["word_count"] = df[TEXT_COLUMN].apply(
+        lambda x: len(re.findall(r"\b\w+\b", str(x).lower())) if pd.notnull(x) else 0
+    )
+    print("\nEmail Word Count statistics:")
+    print(df["word_count"].describe())
+    avg_words_count = df.groupby(LABEL_COLUMN)["word_count"].mean()
+    avg_words_count.plot(kind="bar")
+    plt.title("Average Email Word Count by Class")
+    plt.suptitle("")
+    plt.xlabel("Class")
+    plt.ylabel("Text Length")
+    plt.xticks(rotation=0)
+    plt.show()
+
+    df["log_word_count"] = np.log(df["word_count"] + 1)
+
+    for label in df[LABEL_COLUMN].unique():
+        plt.hist(
+            df[df[LABEL_COLUMN] == label]["log_word_count"],
+            bins=50,
+            alpha=0.6,
+            label=str(label)
+        )
+    plt.title("Log scaled Email Word Count Distribution")
+    plt.xlabel("Number of Words")
+    plt.ylabel("Frequency")
+    plt.legend()
     plt.show()
 
     print("\nSample phishing emails:")
@@ -172,17 +246,25 @@ def analyze(df):
 
     get_most_common_words_per_class(df)
 
-    print("\nAverage punctuation stats per class:")
-    print(
-        df.groupby(LABEL_COLUMN)[
-            ["punct_total", "exclamation_count", "question_count", "dot_count", "asterics_count", "punct_ratio"]
-        ].mean()
-    )
+    avg_stats = df.groupby(LABEL_COLUMN)[
+        [
+            "punct_total",
+            "exclamation_count",
+            "question_count",
+            "dot_count",
+            "asterics_count",
+            "punct_ratio"
+        ]
+    ].mean()
+    avg_stats[
+        ["punct_total", "exclamation_count", "question_count", "dot_count", "asterics_count"]
+    ].plot(kind="bar")
 
-    df.boxplot(column="exclamation_count", by=LABEL_COLUMN)
-    plt.title("Exclamation Marks by Class")
-    plt.suptitle("")
-    plt.ylabel("Count")
+    plt.title("Average Punctuation Counts by Class")
+    plt.xlabel("Class")
+    plt.ylabel("Average Count")
+    plt.xticks(rotation=0)
+    plt.legend(title="Punctuation Type")
     plt.show()
 
 
@@ -196,6 +278,9 @@ def main():
     df = transform_data(df)
 
     analyze(df)
+
+    df[CLEAN_TEXT_COLUMN] = df[TEXT_COLUMN].apply(clean_text)
+    tfidf_analyz(df, CLEAN_TEXT_COLUMN)
 
 
 main()
